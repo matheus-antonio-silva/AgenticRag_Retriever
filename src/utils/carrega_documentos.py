@@ -1,123 +1,121 @@
-## Libs para carregar os docuemntos dentro do banco de dados vetorial
+"""Utilitários de ingestão de PDFs, persistência FAISS e formatação de contexto."""
 
-## Importacao das Libs
 import os
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-
 from typing import List
 
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.vectorstores import FAISS
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+
 def carrega_pdfs(folder_path: str) -> List[dict]:
+    """Carrega PDFs de uma pasta, divide em chunks e retorna os trechos indexáveis.
 
-    print(f'Carregando PDFs de: {folder_path}')
+    Args:
+        folder_path: Caminho da pasta que contém os arquivos PDF.
 
-    # Cria uma lista para armazenar os documentos carregados
+    Returns:
+        Lista de chunks (documentos LangChain) prontos para embedding.
+    """
+    print(f"Carregando PDFs de: {folder_path}")
 
     documents = []
 
-    # Percorre todos os arquivos da pasta
-
     for filename in os.listdir(folder_path):
-
-        # Verifica se o arquivo tem extensao .pdf
-
-        if filename.lower().endswith('.pdf'):
-
-            # Obtem o caminho completo do arquivo
-
-            file_path = os.path.join(folder_path,filename)
+        if filename.lower().endswith(".pdf"):
+            file_path = os.path.join(folder_path, filename)
 
             try:
-
-                # Cria carregador de PDF para o caminho da pasta
                 loader = PyPDFLoader(file_path)
-
-                # Carrega as páginas do PDF como documento
-
                 loaded_docs = loader.load()
 
-                # Anexa nome do arquivo aos metadaos de cada documento
-
                 for doc in loaded_docs:
-                    doc.metadata['source'] = filename
-                
-                # Adiciona as paginas carregadas na lista de documentos
+                    doc.metadata["source"] = filename
 
                 documents.extend(loaded_docs)
-
-                print(f' - {filename} carregado')
+                print(f" - {filename} carregado")
 
             except Exception as e:
-                # Em caso de erro
-                print(f' - Erro ao carregar {filename}: {e}')
-    
-    # Verificar se há arquivos carregado
+                print(f" - Erro ao carregar {filename}: {e}")
 
     if not documents:
-        print(f'Nenhum documento foi encotrado na pasta : {filename}')
+        print(f"Nenhum documento foi encontrado na pasta: {folder_path}")
         return []
-    
-    print(f'Dividindo {len(documents)} páginas de documentos')
 
-    # Cria o divisor de texto com tamanho do texto e overlap
+    print(f"Dividindo {len(documents)} páginas de documentos")
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size = 1500, chunk_overlap = 200)
-
-    # Divide os documentos em Chunks
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1500,
+        chunk_overlap=200,
+    )
     split_docs = text_splitter.split_documents(documents)
 
-    print(f'Criado {len(split_docs)} chunks de documentos')
+    print(f"Criado {len(split_docs)} chunks de documentos")
 
     return split_docs
 
 
+def _valida_dimensao_embedding(vector_store: FAISS, embeddings, store_path: str) -> None:
+    """Garante que o modelo de embedding atual é compatível com o índice FAISS salvo."""
+    index_dim = vector_store.index.d
+    query_dim = len(embeddings.embed_query(" "))
+    if index_dim != query_dim:
+        raise ValueError(
+            f"Incompatibilidade de dimensões do embedding: o índice FAISS usa "
+            f"{index_dim} dimensões, mas o modelo atual produz {query_dim}. "
+            f"Exclua a pasta '{store_path}' e execute novamente para recriar o índice."
+        )
 
-# Funcao para criar ou carregar vector store FAISS
-def cria_carrega_vectordb(documents : List[dict], embeddings, store_path : str) -> FAISS:
 
-    # Verifica se já existe banco de dados criado
+def cria_carrega_vectordb(documents: List[dict], embeddings, store_path: str) -> FAISS:
+    """Cria um novo índice FAISS ou carrega um existente do disco.
 
+    Args:
+        documents: Chunks de documentos usados na criação do índice (ignorados se já existir).
+        embeddings: Modelo de embeddings para indexação e busca.
+        store_path: Caminho local onde o índice FAISS é salvo ou carregado.
+
+    Returns:
+        Instância FAISS pronta para retrieval.
+    """
     if os.path.exists(store_path):
+        print(f"Carregando Vector Store existente: {store_path}")
 
-        print(f'Carregando Vector Store existente : {store_path}')
+        vector_store = FAISS.load_local(
+            store_path,
+            embeddings,
+            allow_dangerous_deserialization=True,
+        )
+        _valida_dimensao_embedding(vector_store, embeddings, store_path)
 
-        # Carrega o store localmente, com desserializacao
+        print("Vector Store carregado")
 
-        vector_store = FAISS.load_local(store_path,embeddings,allow_dangerous_deserialization=True)
-
-        print(f'Vector Store carregado')
-    
-    else :
-
+    else:
         if not documents:
-            # Se nao houver lista de documentos aparece erro
-            raise ValueError('Nenhum documento fornecido para criar o banco de dados vetorial')
+            raise ValueError(
+                "Nenhum documento fornecido para criar o banco de dados vetorial"
+            )
 
-        print(f'Criando um novo banco de dados vetorial com os documentos fornecidos, total de documents : {len(documents)}')
+        print(
+            f"Criando um novo banco de dados vetorial com os documentos fornecidos, "
+            f"total de documentos: {len(documents)}"
+        )
 
-        # Cria o banco de dados vetorial com o modelo de embedding e os documentos fornecidos
         vector_store = FAISS.from_documents(documents, embeddings)
-
-        # Salva os documentos no banco de dados vetorial local
         vector_store.save_local(store_path)
 
-        print(f'Banco de dados vetorial criado e salvo.')
+        print("Banco de dados vetorial criado e salvo.")
 
     return vector_store
 
 
-# Funcao para formatar documentos em uma única String
-def formata_docs_metadados(docs : List[dict]) -> str:
+def formata_docs_metadados(docs: List[dict]) -> str:
+    """Formata chunks recuperados em uma única string de contexto para o LLM.
 
-    # Une Chunks separados
-
-    return '\n\n--\n\n'.join(
-    
-        # Para cada documento na lista, cria uma string com fonte, página e conteúdo
-        f"Fonte: {doc.metadata.get('source', 'Desconhecida')} (Página: {doc.metadata.get('page', 'N/D')})\n\n{doc.page_content}"
-        
-        # Itera sobre todos os documentos fornecidos
+    Cada chunk inclui fonte, página e conteúdo, separados por delimitadores.
+    """
+    return "\n\n--\n\n".join(
+        f"Fonte: {doc.metadata.get('source', 'Desconhecida')} "
+        f"(Página: {doc.metadata.get('page', 'N/D')})\n\n{doc.page_content}"
         for doc in docs
     )
-
